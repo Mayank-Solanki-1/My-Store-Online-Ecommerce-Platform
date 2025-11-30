@@ -108,7 +108,7 @@
                                                          <c:when test="${o.process == 'Shipped'}">
                                                              <span class="badge bg-info text-dark">Shipped</span>
                                                          </c:when>
-                                                         <c:when test="$o.process == 'Delivered'}">
+                                                         <c:when test="${o.process == 'Delivered'}">
                                                              <span class="badge bg-success">Delivered</span>
                                                          </c:when>
                                                          <c:when test="${o.process == 'Cancelled'}">
