@@ -41,6 +41,9 @@ public class OrderDAO {
     // -------------------------------
     // Create Order with Items
     // -------------------------------
+    /**
+     * Create order with FULL TRANSACTION MANAGEMENT
+     */
     public int createOrderWithItemsAndShipping(int buyerId, double totalAmount,
                                                List<OrderItem> items,
                                                String phone, String address,
@@ -48,19 +51,21 @@ public class OrderDAO {
                                                String pincode) throws SQLException {
 
         String updateUser = "UPDATE users SET phone=?, address=?, city=?, state=?, pincode=? WHERE id=?";
-        String insertOrder = "INSERT INTO orders(buyer_id, total_amount, status, created_at) VALUES(?,?, 'Pending', NOW())";
+        String insertOrder = "INSERT INTO orders(buyer_id, total_amount, status, process, created_at) VALUES(?,?, 'Pending', 'Pending', NOW())";
         String insertItem = "INSERT INTO order_items(order_id, product_id, quantity, unit_price) VALUES(?,?,?,?)";
+        String updateStock = "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?";
 
-        Connection c = null;
+        Connection conn = null;
+        int orderId = -1;
 
         try {
-            c = ds.getConnection();
-            c.setAutoCommit(false);
+            conn = ds.getConnection();
+            conn.setAutoCommit(false); // START TRANSACTION
 
-            // --------------------------
-            // 1) UPDATE USER SHIPPING INFO
-            // --------------------------
-            try (PreparedStatement psUser = c.prepareStatement(updateUser)) {
+            System.out.println("🔄 Transaction started for buyer: " + buyerId);
+
+            // STEP 1: UPDATE USER INFO
+            try (PreparedStatement psUser = conn.prepareStatement(updateUser)) {
                 psUser.setString(1, phone);
                 psUser.setString(2, address);
                 psUser.setString(3, city);
@@ -68,58 +73,78 @@ public class OrderDAO {
                 psUser.setString(5, pincode);
                 psUser.setInt(6, buyerId);
                 psUser.executeUpdate();
+                System.out.println("✅ User shipping info updated");
             }
 
-            // --------------------------
-            // 2) INSERT INTO ORDERS
-            // --------------------------
-            int orderId;
-            try (PreparedStatement ps = c.prepareStatement(insertOrder, Statement.RETURN_GENERATED_KEYS)) {
-                ps.setInt(1, buyerId);
-                ps.setDouble(2, totalAmount);
-                ps.executeUpdate();
+            // STEP 2: INSERT ORDER
+            try (PreparedStatement psOrder = conn.prepareStatement(insertOrder, Statement.RETURN_GENERATED_KEYS)) {
+                psOrder.setInt(1, buyerId);
+                psOrder.setDouble(2, totalAmount);
+                psOrder.executeUpdate();
 
-                try (ResultSet keys = ps.getGeneratedKeys()) {
-                    keys.next();
-                    orderId = keys.getInt(1);
-                }
-            }
-
-            // --------------------------
-            // 3) INSERT ORDER ITEMS + UPDATE STOCK
-            // --------------------------
-            try (PreparedStatement psItem = c.prepareStatement(insertItem)) {
-                for (OrderItem it : items) {
-                    psItem.setInt(1, orderId);
-                    psItem.setInt(2, it.productId);
-                    psItem.setInt(3, it.quantity);
-                    psItem.setDouble(4, it.unitPrice);
-                    psItem.executeUpdate();
-
-                    try (PreparedStatement psStock = c.prepareStatement(
-                            "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?")) {
-
-                        psStock.setInt(1, it.quantity);
-                        psStock.setInt(2, it.productId);
-                        psStock.setInt(3, it.quantity);
-
-                        if (psStock.executeUpdate() == 0) {
-                            throw new SQLException("Insufficient stock for product " + it.productId);
-                        }
+                try (ResultSet keys = psOrder.getGeneratedKeys()) {
+                    if (keys.next()) {
+                        orderId = keys.getInt(1);
+                        System.out.println("📝 Order ID generated: " + orderId);
+                    } else {
+                        throw new SQLException("Failed to retrieve order ID");
                     }
                 }
             }
 
-            c.commit();
+            // STEP 3: INSERT ITEMS & REDUCE STOCK
+            try (PreparedStatement psItem = conn.prepareStatement(insertItem);
+                 PreparedStatement psStock = conn.prepareStatement(updateStock)) {
+
+                for (OrderItem item : items) {
+                    // Insert order item
+                    psItem.setInt(1, orderId);
+                    psItem.setInt(2, item.productId);
+                    psItem.setInt(3, item.quantity);
+                    psItem.setDouble(4, item.unitPrice);
+                    psItem.executeUpdate();
+
+                    System.out.println("✅ Item added - Product: " + item.productId);
+
+                    // Reduce stock
+                    psStock.setInt(1, item.quantity);
+                    psStock.setInt(2, item.productId);
+                    psStock.setInt(3, item.quantity);
+
+                    if (psStock.executeUpdate() == 0) {
+                        throw new SQLException("⚠️ Insufficient stock for product: " + item.productId);
+                    }
+
+                    System.out.println("✅ Stock reduced - Product: " + item.productId);
+                }
+            }
+
+            conn.commit(); // COMMIT TRANSACTION
+            System.out.println("✅ TRANSACTION COMMITTED - Order: " + orderId);
+
             return orderId;
 
         } catch (SQLException ex) {
-            if (c != null) c.rollback();
+            System.err.println("❌ ERROR: " + ex.getMessage());
+            if (conn != null) {
+                try {
+                    conn.rollback(); // ROLLBACK ON ERROR
+                    System.err.println("⏪ TRANSACTION ROLLED BACK");
+                } catch (SQLException rollbackEx) {
+                    System.err.println("❌ ROLLBACK FAILED: " + rollbackEx.getMessage());
+                }
+            }
             throw ex;
 
         } finally {
-            if (c != null) {
-                try { c.setAutoCommit(true); c.close(); } catch (SQLException e) {}
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(true);
+                    conn.close();
+                    System.out.println("🔒 Connection closed");
+                } catch (SQLException closeEx) {
+                    System.err.println("❌ Error closing: " + closeEx.getMessage());
+                }
             }
         }
     }
